@@ -1,0 +1,37 @@
+# Build output
+/bin/
+/out/
+*.exe
+*.test
+
+# Test and coverage artefacts
+coverage.out
+coverage.html
+*.prof
+
+# Go workspace sum file: derived, and it churns on every dependency change.
+go.work
+go.work.sum
+
+# Local environment overrides. deploy/.env.example is committed.
+*.env
+.env
+deploy/.env
+
+# Editors
+.idea/
+*/.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local logs
+*.log
+
+# Ключи подписи JWT: генерируются сервисом при первом запуске и добавляются
+# при ротации. В репозиторий не попадают ни при каких обстоятельствах.
+services/auth-service/configs/jwt_keys/
+services/auth-service/configs/jwt_private_key.pem
+
+CLAUDE.md
+*/CLAUDE.md
