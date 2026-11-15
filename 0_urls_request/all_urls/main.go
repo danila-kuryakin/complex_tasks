@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
+	"time"
 )
 
 /*
@@ -34,6 +34,10 @@ func FirstSuccessfulRequest(
 Если все запросы завершились ошибкой или неуспешным HTTP-статусом, функция возвращает ошибку.
 Отмена переданного контекста прекращает ожидание результата и возвращается как ошибка.
 Для HTTP-статуса вне диапазона 200–299 результат считается неуспешным.
+
+Усложнение:
+ - Все успешные ответы
+ - Ограничение goroutines
 */
 
 type FetchResult struct {
@@ -41,96 +45,115 @@ type FetchResult struct {
 	Body []byte
 }
 
+type FetchResults struct {
+	fetches []FetchResult
+}
+
 func FirstSuccessfulRequest(
 	ctx context.Context,
 	client *http.Client,
 	urls []string,
-) (FetchResult, error) {
+	maxWorkers int,
+) (FetchResults, error) {
 	if len(urls) == 0 {
-		return FetchResult{}, errors.New("URLs is empty")
+		return FetchResults{}, errors.New("urls is empty")
 	}
 
-	ctx, cansel := context.WithCancel(ctx)
-	defer cansel()
-
-	type dataFetch struct {
-		fetch FetchResult
-		err   error
+	type retData struct {
+		data FetchResult
+		err  error
 	}
 
-	wg := &sync.WaitGroup{}
-	ch := make(chan dataFetch, len(urls))
+	var returnFetch []FetchResult
 
-	for _, url := range urls {
-		wg.Add(1)
+	ch := make(chan retData, len(urls))
+	guard := make(chan struct{}, maxWorkers)
+
+	for _, u := range urls {
+		select {
+		case guard <- struct{}{}:
+		case <-ctx.Done():
+			return FetchResults{}, nil
+		}
 		go func(url string) {
-			defer wg.Done()
+			fmt.Println("Start: ", url)
+			defer func() {
+				<-guard
+			}()
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 			if err != nil {
-				ch <- dataFetch{err: err}
+				ch <- retData{err: err}
 				return
 			}
 
 			resp, err := client.Do(req)
 			if err != nil {
-				ch <- dataFetch{err: err}
+				ch <- retData{err: err}
 				return
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode < 200 || resp.StatusCode > 299 {
-				ch <- dataFetch{err: fmt.Errorf("%s: status code 2xx: %w", url, err)}
+				ch <- retData{err: fmt.Errorf("Error in %s: status coder is not 2xx", url)}
 				return
 			}
 
-			body, err := io.ReadAll(resp.Body)
+			data, err := io.ReadAll(resp.Body)
 			if err != nil {
-				ch <- dataFetch{err: err}
+				ch <- retData{err: err}
 				return
 			}
 
-			ch <- dataFetch{
-				fetch: FetchResult{
+			ch <- retData{
+				data: FetchResult{
 					URL:  url,
-					Body: body,
+					Body: data,
 				},
 				err: nil,
 			}
-		}(url)
+
+		}(u)
 	}
 
 	var lastErr error
-
-	for i := 0; i < len(urls); i++ {
+	for range urls {
 		select {
 		case out := <-ch:
 			if out.err == nil {
-				return out.fetch, nil
+				returnFetch = append(returnFetch, out.data)
 			}
-			lastErr = out.err
 		case <-ctx.Done():
-			return FetchResult{}, ctx.Err()
+			return FetchResults{}, ctx.Err()
 		}
 	}
 
-	if lastErr != nil {
-		return FetchResult{}, lastErr
+	if len(returnFetch) != 0 {
+		return FetchResults{fetches: returnFetch}, nil
 	}
 
-	return FetchResult{}, errors.New("all requests failed")
+	if lastErr != nil {
+		return FetchResults{}, lastErr
+	}
+
+	return FetchResults{}, errors.New("urls is end")
 }
 
 func main() {
 	urls := []string{
-		"http://vk.ru/",
-		"http://ok.ru/",
-		"http://ya.ru/",
+		"https://vk.ru/",
+		"https://ok.ru/",
+		"https://ya.ru/",
+		"https://2ip.ru/",
+		"https://2ip.com/",
+		"https://2ip.io/",
 	}
 
-	request, err := FirstSuccessfulRequest(context.Background(), &http.Client{}, urls)
+	request, err := FirstSuccessfulRequest(context.Background(), &http.Client{Timeout: 5 * time.Second}, urls, 2)
 	if err != nil {
 		return
 	}
 
-	fmt.Println(request.URL)
+	for _, fetch := range request.fetches {
+		fmt.Println(fetch.URL)
+	}
 }
